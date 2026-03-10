@@ -131,12 +131,16 @@ class SparseFlowMatchingTrainer(FlowMatchingTrainer):
             collate_fn=self.dataset.collate_fn if hasattr(self.dataset, 'collate_fn') else None,
         )
         data = next(iter(dataloader))
+        # Clamp to actual samples returned by the dataloader.
+        # With small datasets the dataloader may return fewer than num_samples items,
+        # and iterating beyond that produces empty SparseTensors that crash torch.cat.
+        actual_samples = min(num_samples, data['cond'].shape[0])
 
         # inference
         sampler = self.get_sampler()
         sample = []
         cond_vis = []
-        for i in range(0, num_samples, batch_size):
+        for i in range(0, actual_samples, batch_size):
             batch_data = {k: v[i:i+batch_size] for k, v in data.items()}
             batch_data = recursive_to_device(batch_data, 'cuda')
             noise = batch_data['x_0'].replace(torch.randn_like(batch_data['x_0'].feats))

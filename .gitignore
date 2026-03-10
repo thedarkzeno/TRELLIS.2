@@ -5,7 +5,9 @@ __pycache__/
 
 # C extensions
 *.so
-
+datasets/*
+mesh_dumps/*
+results/*
 # Distribution / packaging
 .Python
 build/
