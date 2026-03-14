@@ -15,8 +15,14 @@ class SparseTransformerElasticMixin(ElasticModuleMixin):
             yield 1.0
             return
         num_blocks = len(self.blocks)
-        num_checkpoint_blocks = min(math.ceil((1 - mem_ratio) * num_blocks) + 1, num_blocks)
-        exact_mem_ratio = 1 - (num_checkpoint_blocks - 1) / num_blocks
+        # Use effective_depth (sum of repeat_schedule) so that the memory ratio
+        # calculation accounts for the true number of forward passes, not just
+        # the number of unique parameter blocks.
+        effective_depth = getattr(self, 'effective_depth', num_blocks)
+        num_checkpoint_blocks = min(
+            math.ceil((1 - mem_ratio) * effective_depth) + 1, num_blocks
+        )
+        exact_mem_ratio = 1 - (num_checkpoint_blocks - 1) / effective_depth
         for i in range(num_blocks):
             self.blocks[i].use_checkpoint = i < num_checkpoint_blocks
         yield exact_mem_ratio

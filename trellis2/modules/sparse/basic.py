@@ -834,3 +834,37 @@ def sparse_unbind(input: SparseTensor, dim: int) -> List[SparseTensor]:
     else:
         feats = input.feats.unbind(dim)
         return [input.replace(f) for f in feats]
+
+
+def sparse_random_mask(
+    x: SparseTensor,
+    mask_ratio: float,
+    generator: Optional[torch.Generator] = None,
+) -> Tuple[SparseTensor, torch.LongTensor]:
+    """
+    Randomly keep (1 - mask_ratio) fraction of tokens for each batch element.
+
+    Tokens are selected independently per batch element. The returned indices
+    are sorted so the output SparseTensor maintains the invariant that batch
+    indices appear in ascending order (required by the sparse attention kernels).
+
+    Args:
+        x: Input SparseTensor with shape [B, C].
+        mask_ratio: Fraction of tokens to discard, in [0, 1).
+        generator: Optional torch.Generator for reproducible sampling.
+
+    Returns:
+        masked: SparseTensor containing only the kept tokens.
+        keep_indices: 1-D LongTensor of global (flat) indices into x.feats / x.coords
+                      of the kept tokens, sorted in ascending order.
+    """
+    assert 0.0 <= mask_ratio < 1.0, f"mask_ratio must be in [0, 1), got {mask_ratio}"
+    keep_list = []
+    for s in x.layout:
+        n = s.stop - s.start
+        n_keep = max(1, round(n * (1.0 - mask_ratio)))
+        perm = torch.randperm(n, device=x.device, generator=generator)[:n_keep]
+        keep_list.append(perm + s.start)
+    keep_indices = torch.cat(keep_list).sort()[0]
+    masked = SparseTensor(x.feats[keep_indices], x.coords[keep_indices])
+    return masked, keep_indices

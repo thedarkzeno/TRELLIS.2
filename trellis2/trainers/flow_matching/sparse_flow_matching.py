@@ -51,8 +51,16 @@ class SparseFlowMatchingTrainer(FlowMatchingTrainer):
 
         t_schedule (dict): Time schedule for flow matching.
         sigma_min (float): Minimum noise level.
+        mask_ratio (float): Fraction of tokens to mask during training (0.0 = no masking).
+                            The trainer generates the mask and passes keep_indices to the model,
+                            which outputs predictions only at the kept positions.
     """
-    
+
+    def __init__(self, *args, mask_ratio: float = 0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert 0.0 <= mask_ratio < 1.0, f"mask_ratio must be in [0, 1), got {mask_ratio}"
+        self.mask_ratio = mask_ratio
+
     def prepare_dataloader(self, **kwargs):
         """
         Prepare dataloader.
@@ -96,18 +104,37 @@ class SparseFlowMatchingTrainer(FlowMatchingTrainer):
         t = self.sample_t(x_0.shape[0]).to(x_0.device).float()
         x_t = self.diffuse(x_0, t, noise=noise)
         cond = self.get_cond(cond, **kwargs)
-        
-        pred = self.training_models['denoiser'](x_t, t * 1000, cond, **kwargs)
-        assert pred.shape == noise.shape == x_0.shape
+
+        # Generate token mask (trainer owns masking; model receives keep_indices).
+        # training_losses() is only called during training, never during snapshot/inference.
+        keep_indices = None
+        if self.mask_ratio > 0:
+            _, keep_indices = sp.sparse_random_mask(x_t, self.mask_ratio)
+
+        pred = self.training_models['denoiser'](
+            x_t, t * 1000, cond, keep_indices=keep_indices, **kwargs
+        )
+
         target = self.get_v(x_0, noise, t)
+        # Align target with the subset of tokens the model predicted
+        if keep_indices is not None:
+            target = sp.SparseTensor(
+                target.feats[keep_indices],
+                target.coords[keep_indices],
+            )
+
+        assert pred.feats.shape == target.feats.shape, (
+            f"pred and target shape mismatch: {pred.feats.shape} vs {target.feats.shape}"
+        )
+
         terms = edict()
         terms["mse"] = F.mse_loss(pred.feats, target.feats)
         terms["loss"] = terms["mse"]
 
-        # log loss with time bins
+        # Log loss per diffusion-time bin using the (possibly masked) layout
         mse_per_instance = np.array([
-            F.mse_loss(pred.feats[x_0.layout[i]], target.feats[x_0.layout[i]]).item()
-            for i in range(x_0.shape[0])
+            F.mse_loss(pred.feats[pred.layout[i]], target.feats[pred.layout[i]]).item()
+            for i in range(pred.shape[0])
         ])
         time_bin = np.digitize(t.cpu().numpy(), np.linspace(0, 1, 11)) - 1
         for i in range(10):
@@ -205,6 +232,7 @@ class SparseFlowMatchingCFGTrainer(ClassifierFreeGuidanceMixin, SparseFlowMatchi
         t_schedule (dict): Time schedule for flow matching.
         sigma_min (float): Minimum noise level.
         p_uncond (float): Probability of dropping conditions.
+        mask_ratio (float): Fraction of tokens to mask during training.
     """
     pass
 
@@ -245,6 +273,7 @@ class TextConditionedSparseFlowMatchingCFGTrainer(TextConditionedMixin, SparseFl
         sigma_min (float): Minimum noise level.
         p_uncond (float): Probability of dropping conditions.
         text_cond_model(str): Text conditioning model.
+        mask_ratio (float): Fraction of tokens to mask during training.
     """
     pass
 
@@ -285,6 +314,7 @@ class ImageConditionedSparseFlowMatchingCFGTrainer(ImageConditionedMixin, Sparse
         sigma_min (float): Minimum noise level.
         p_uncond (float): Probability of dropping conditions.
         image_cond_model (str): Image conditioning model.
+        mask_ratio (float): Fraction of tokens to mask during training.
     """
     pass
 
@@ -325,5 +355,6 @@ class MultiImageConditionedSparseFlowMatchingCFGTrainer(MultiImageConditionedMix
         sigma_min (float): Minimum noise level.
         p_uncond (float): Probability of dropping conditions.
         image_cond_model (str): Image conditioning model.
+        mask_ratio (float): Fraction of tokens to mask during training.
     """
     pass

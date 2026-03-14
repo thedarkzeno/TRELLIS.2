@@ -82,6 +82,7 @@ class BasicTrainer:
         log_param_stats=False,
         prefetch_data=True,
         snapshot_batch_size=4,
+        snapshot_num_samples=64,
         i_print=1000,
         i_log=500,
         i_sample=10000,
@@ -110,6 +111,7 @@ class BasicTrainer:
         self.log_param_stats = log_param_stats
         self.prefetch_data = prefetch_data
         self.snapshot_batch_size = snapshot_batch_size
+        self.snapshot_num_samples = snapshot_num_samples
         self.log = []
         if self.prefetch_data:
             self._data_prefetched = None
@@ -240,10 +242,18 @@ class BasicTrainer:
             self.ema_params = [copy.deepcopy(self.master_params) for _ in self.ema_rate]
 
         # Initialize optimizer
+        # Lookup order: torch.optim → bitsandbytes.optim → module globals
         if hasattr(torch.optim, self.optimizer_config['name']):
             self.optimizer = getattr(torch.optim, self.optimizer_config['name'])(self.master_params, **self.optimizer_config['args'])
         else:
-            self.optimizer = globals()[self.optimizer_config['name']](self.master_params, **self.optimizer_config['args'])
+            try:
+                import bitsandbytes as bnb
+                if hasattr(bnb.optim, self.optimizer_config['name']):
+                    self.optimizer = getattr(bnb.optim, self.optimizer_config['name'])(self.master_params, **self.optimizer_config['args'])
+                else:
+                    self.optimizer = globals()[self.optimizer_config['name']](self.master_params, **self.optimizer_config['args'])
+            except ImportError:
+                self.optimizer = globals()[self.optimizer_config['name']](self.master_params, **self.optimizer_config['args'])
         
         # Initalize learning rate scheduler
         if self.lr_scheduler_config is not None:
@@ -820,9 +830,9 @@ class BasicTrainer:
             print('\nStarting training...')
             self.snapshot_dataset(batch_size=self.snapshot_batch_size)
         if self.step == 0:
-            self.snapshot(suffix='init', batch_size=self.snapshot_batch_size)
+            self.snapshot(suffix='init', num_samples=self.snapshot_num_samples, batch_size=self.snapshot_batch_size)
         else: # resume
-            self.snapshot(suffix=f'resume_step{self.step:07d}', batch_size=self.snapshot_batch_size)
+            self.snapshot(suffix=f'resume_step{self.step:07d}', num_samples=self.snapshot_num_samples, batch_size=self.snapshot_batch_size)
 
         time_last_print = 0.0
         time_elapsed = 0.0
@@ -855,7 +865,13 @@ class BasicTrainer:
 
             # Sample images
             if self.step % self.i_sample == 0:
-                self.snapshot()
+                # Release training cache before allocating sampling buffers.
+                # Critical when using quantized optimizers (e.g. AdamW8bit) whose
+                # CUDA kernels can fragment the memory arena — without this flush,
+                # tensor deallocation inside snapshot() triggers CUDA error 700
+                # (illegal memory access).
+                torch.cuda.empty_cache()
+                self.snapshot(num_samples=self.snapshot_num_samples, batch_size=self.snapshot_batch_size)
 
             if self.is_master:
                 self.log.append((self.step, {}))
@@ -888,7 +904,8 @@ class BasicTrainer:
             # Check abort
             self.check_abort()
 
-        self.snapshot(suffix='final', batch_size=self.snapshot_batch_size)
+        torch.cuda.empty_cache()
+        self.snapshot(suffix='final', num_samples=self.snapshot_num_samples, batch_size=self.snapshot_batch_size)
         if self.world_size > 1:
             dist.barrier()
         if self.is_master:

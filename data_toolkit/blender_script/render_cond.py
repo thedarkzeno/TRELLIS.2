@@ -10,15 +10,15 @@ import glob
 """=============== BLENDER ==============="""
 
 IMPORT_FUNCTIONS: Dict[str, Callable] = {
-    "obj": bpy.ops.import_scene.obj,
+    "obj": bpy.ops.import_scene.obj if bpy.app.version[0] < 4 else bpy.ops.wm.obj_import,
     "glb": bpy.ops.import_scene.gltf,
     "gltf": bpy.ops.import_scene.gltf,
     "usd": bpy.ops.import_scene.usd,
     "fbx": bpy.ops.import_scene.fbx,
-    "stl": bpy.ops.import_mesh.stl,
+    "stl": bpy.ops.import_mesh.stl if bpy.app.version[0] < 4 else bpy.ops.wm.stl_import,
     "usda": bpy.ops.import_scene.usda,
     "dae": bpy.ops.wm.collada_import,
-    "ply": bpy.ops.import_mesh.ply,
+    "ply": bpy.ops.import_mesh.ply if bpy.app.version[0] < 4 else bpy.ops.wm.ply_import,
     "abc": bpy.ops.wm.alembic_import,
     "blend": bpy.ops.wm.append,
 }
@@ -34,7 +34,7 @@ EXT = {
 }
 
 
-def init_render(engine='CYCLES', resolution=512):
+def init_render(engine='BLENDER_EEVEE_NEXT', resolution=512, cycles_device='OPTIX'):
     bpy.context.scene.render.engine = engine
     bpy.context.scene.render.resolution_x = resolution
     bpy.context.scene.render.resolution_y = resolution
@@ -42,19 +42,41 @@ def init_render(engine='CYCLES', resolution=512):
     bpy.context.scene.render.image_settings.file_format = 'PNG'
     bpy.context.scene.render.image_settings.color_mode = 'RGBA'
     bpy.context.scene.render.film_transparent = True
-    
-    bpy.context.scene.cycles.device = 'GPU'
-    bpy.context.scene.cycles.samples = 32
-    bpy.context.scene.cycles.filter_type = 'BOX'
-    bpy.context.scene.cycles.filter_width = 1
-    bpy.context.scene.cycles.diffuse_bounces = 1
-    bpy.context.scene.cycles.glossy_bounces = 1
-    bpy.context.scene.cycles.transparent_max_bounces = 3
-    bpy.context.scene.cycles.transmission_bounces = 3
-    bpy.context.scene.cycles.use_denoising = True
-        
-    bpy.context.preferences.addons['cycles'].preferences.get_devices()
-    bpy.context.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
+
+    if engine == 'CYCLES':
+        bpy.context.scene.cycles.samples = 32
+        bpy.context.scene.cycles.filter_type = 'BOX'
+        bpy.context.scene.cycles.filter_width = 1
+        bpy.context.scene.cycles.diffuse_bounces = 1
+        bpy.context.scene.cycles.glossy_bounces = 1
+        bpy.context.scene.cycles.transparent_max_bounces = 3
+        bpy.context.scene.cycles.transmission_bounces = 3
+        bpy.context.scene.cycles.use_denoising = True
+
+        if cycles_device != 'CPU':
+            cycles_prefs = bpy.context.preferences.addons['cycles'].preferences
+            cycles_prefs.get_devices()
+            gpu_devices = [d for d in cycles_prefs.devices if d.type != 'CPU']
+            if gpu_devices:
+                for d in cycles_prefs.devices:
+                    d.use = (d.type != 'CPU')
+                bpy.context.scene.cycles.device = 'GPU'
+                print(f'[INFO] Cycles on GPU: '
+                      f'{", ".join(d.name for d in gpu_devices)}', flush=True)
+            else:
+                bpy.context.scene.cycles.device = 'CPU'
+                print('[WARN] Cycles: no GPU found, using CPU.', flush=True)
+        else:
+            bpy.context.scene.cycles.device = 'CPU'
+
+    elif engine in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT'):
+        # EEVEE uses OpenGL — GPU acceleration via WSLg DISPLAY=:0.
+        # Blender 4.x (EEVEE Next) removed bloom/ssr; use only stable attrs.
+        eevee = bpy.context.scene.eevee
+        eevee.taa_render_samples = 32
+        if hasattr(eevee, 'use_gtao'):
+            eevee.use_gtao = True
+        print(f'[INFO] EEVEE rendering on GPU (OpenGL/WSLg).', flush=True)
     
 
 def init_scene() -> None:
@@ -381,7 +403,7 @@ def main(arg):
     print('[INFO] Camera and lighting initialized.')
         
     # ============= Render conditional views =============
-    init_render(engine=arg.engine, resolution=arg.cond_resolution)
+    init_render(engine=arg.engine, resolution=arg.cond_resolution, cycles_device=arg.cycles_device)
     # Create a list of views
     to_export = {
         "aabb": [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
@@ -429,7 +451,11 @@ if __name__ == '__main__':
     parser.add_argument('--cond_views', type=str, help='JSON string of views. Contains a list of {yaw, pitch, radius, fov} object.')
     parser.add_argument('--cond_output_folder', type=str, default='/tmp', help='The path the output will be dumped to.')
     parser.add_argument('--cond_resolution', type=int, default=1024, help='Resolution of the conditional images.')
-    parser.add_argument('--engine', type=str, default='CYCLES', help='Blender internal engine for rendering. E.g. CYCLES, BLENDER_EEVEE, ...')
+    parser.add_argument('--engine', type=str, default='BLENDER_EEVEE_NEXT',
+                        help='Blender render engine. BLENDER_EEVEE_NEXT (GPU via OpenGL, default), CYCLES (CPU in WSL2 headless), ...')
+    parser.add_argument('--cycles-device', type=str, default='OPTIX',
+                        choices=['OPTIX', 'CUDA', 'HIP', 'METAL', 'CPU'],
+                        help='GPU backend for Cycles (OPTIX is fastest on RTX GPUs)')
     argv = sys.argv[sys.argv.index("--") + 1:]
     args = parser.parse_args(argv)
 

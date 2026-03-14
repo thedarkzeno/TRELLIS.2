@@ -8,6 +8,7 @@ __attributes = {
     'SparseTensor': 'basic',
     'sparse_cat': 'basic',
     'sparse_unbind': 'basic',
+    'sparse_random_mask': 'basic',
     'SparseGroupNorm': 'norm',
     'SparseLayerNorm': 'norm',
     'SparseGroupNorm32': 'norm',

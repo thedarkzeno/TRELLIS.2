@@ -14,19 +14,19 @@ import numpy as np
 from utils import sphere_hammersley_sequence
 
 
-BLENDER_LINK = 'https://download.blender.org/release/Blender3.0/blender-3.0.1-linux-x64.tar.xz'
+BLENDER_LINK = 'https://ftp.halifax.rwth-aachen.de/blender/release/Blender4.5/blender-4.5.1-linux-x64.tar.xz'
 BLENDER_INSTALLATION_PATH = '/tmp'
-BLENDER_PATH = f'{BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64/blender'
+BLENDER_PATH = f'{BLENDER_INSTALLATION_PATH}/blender-4.5.1-linux-x64/blender'
 
 def _install_blender():
     if not os.path.exists(BLENDER_PATH):
         os.system('sudo apt-get update')
         os.system('sudo apt-get install -y libxrender1 libxi6 libxkbcommon-x11-0 libsm6 libxfixes3 libgl1')
         os.system(f'wget {BLENDER_LINK} -P {BLENDER_INSTALLATION_PATH}')
-        os.system(f'tar -xvf {BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64.tar.xz -C {BLENDER_INSTALLATION_PATH}')
+        os.system(f'tar -xvf {BLENDER_INSTALLATION_PATH}/blender-4.5.1-linux-x64.tar.xz -C {BLENDER_INSTALLATION_PATH}')
 
 
-def _render_cond(file_path, metadatum, root, num_cond_views):
+def _render_cond(file_path, metadatum, root, num_cond_views, cycles_device='CPU', cond_resolution=512):
     sha256 = metadatum['sha256']
     # Build conditional view camera
     yaws = []
@@ -47,17 +47,19 @@ def _render_cond(file_path, metadatum, root, num_cond_views):
     cond_views = [{'yaw': y, 'pitch': p, 'radius': r, 'fov': f} for y, p, r, f in zip(yaws, pitchs, radius, fov)]
     
     args = [
-        BLENDER_PATH, '-b', '-P', os.path.join(os.path.dirname(__file__), 'blender_script', 'render_cond.py'),
+        BLENDER_PATH, '-b',
+        '-P', os.path.join(os.path.dirname(__file__), 'blender_script', 'render_cond.py'),
         '--',
         '--object', os.path.expanduser(file_path),
         '--cond_views', json.dumps(cond_views),
-        '--cond_resolution', '1024',
+        '--cond_resolution', str(cond_resolution),
         '--cond_output_folder', os.path.join(root, 'renders_cond', sha256),
         '--engine', 'CYCLES',
+        '--cycles-device', cycles_device,
     ]
     if file_path.endswith('.blend'):
         args.insert(1, file_path)
-    
+
     call(args, stdout=DEVNULL, stderr=DEVNULL)
     
     if os.path.exists(os.path.join(root, 'renders_cond', sha256, 'transforms.json')):
@@ -80,6 +82,11 @@ if __name__ == '__main__':
                         help='Instances to process')
     parser.add_argument('--num_cond_views', type=int, default=16,
                         help='Number of conditional views to render')
+    parser.add_argument('--cycles-device', type=str, default='CPU',
+                        choices=['OPTIX', 'CUDA', 'HIP', 'METAL', 'CPU'],
+                        help='Cycles device (default: CPU — GPU not available in WSL2 headless)')
+    parser.add_argument('--cond_resolution', type=int, default=512,
+                        help='Resolution of rendered condition images (default: 512)')
     dataset_utils.add_args(parser)
     parser.add_argument('--rank', type=int, default=0)
     parser.add_argument('--world_size', type=int, default=1)
@@ -140,7 +147,7 @@ if __name__ == '__main__':
     print(f'Processing {len(metadata)} objects...')
 
     # process objects
-    func = partial(_render_cond, root=opt.render_cond_root, num_cond_views=opt.num_cond_views)
+    func = partial(_render_cond, root=opt.render_cond_root, num_cond_views=opt.num_cond_views, cycles_device=opt.cycles_device, cond_resolution=opt.cond_resolution)
     cond_rendered = dataset_utils.foreach_instance(metadata, opt.render_cond_root, func, max_workers=opt.max_workers, desc='Rendering objects')
     cond_rendered = pd.concat([cond_rendered, pd.DataFrame.from_records(records)])
     cond_rendered.to_csv(os.path.join(opt.render_cond_root, 'renders_cond', 'new_records', f'part_{opt.rank}.csv'), index=False)
