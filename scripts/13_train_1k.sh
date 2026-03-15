@@ -18,7 +18,7 @@ ROOT="datasets/ObjaverseXL_sketchfab"
 SHAPE_LATENT_DIR="$ROOT/shape_latents/shape_enc_next_dc_f16c32_fp16_512"
 RENDER_COND_DIR="$ROOT/renders_cond"
 CONFIG="configs/gen/ablations/E_combined_reuse_mixer_mask50.json" # configs/gen/slat_flow_img2shape_1k.json"
-OUTPUT_DIR="results/E_combined_reuse_mixer_mask75_1k"
+OUTPUT_DIR="results/E_combined_reuse_mixer_mask75_1k_big"
 
 MAX_STEPS=${MAX_STEPS:-30000}
 

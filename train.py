@@ -145,14 +145,14 @@ if __name__ == '__main__':
             main(0, cfg)
     else:
         for rty in range(cfg.auto_retry):
-            try:
+            # try:
                 cfg = find_ckpt(cfg)
                 if cfg.num_gpus > 1:
                     mp.spawn(main, args=(cfg,), nprocs=cfg.num_gpus, join=True)
                 else:
                     main(0, cfg)
                 break
-            except Exception as e:
-                print(f'Error: {e}')
-                print(f'Retrying ({rty + 1}/{cfg.auto_retry})...')
+            # except Exception as e:
+            #     print(f'Error: {e}')
+            #     print(f'Retrying ({rty + 1}/{cfg.auto_retry})...')
             

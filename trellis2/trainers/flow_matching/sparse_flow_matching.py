@@ -70,13 +70,18 @@ class SparseFlowMatchingTrainer(FlowMatchingTrainer):
             shuffle=True,
             batch_size=self.batch_size_per_gpu,
         )
+        # Cap num_workers to avoid exhausting /dev/shm in constrained environments
+        # (e.g. Docker containers with small --shm-size). Each worker allocates
+        # shared memory proportional to batch_size * tensor_size.
+        _nw = int(np.ceil(os.cpu_count() / torch.cuda.device_count()))
+        _nw = min(_nw, int(os.environ.get('DATALOADER_NUM_WORKERS', 4)))
         self.dataloader = DataLoader(
             self.dataset,
             batch_size=self.batch_size_per_gpu,
-            num_workers=int(np.ceil(os.cpu_count() / torch.cuda.device_count())),
-            pin_memory=True,
+            num_workers=_nw,
+            pin_memory=False,
             drop_last=True,
-            persistent_workers=True,
+            persistent_workers=_nw > 0,
             collate_fn=functools.partial(self.dataset.collate_fn, split_size=self.batch_split),
             sampler=self.data_sampler,
         )

@@ -211,6 +211,45 @@ def sparse_scaled_dot_product_attention(*args, **kwargs):
             max_q_seqlen = max(q_seqlen)
             max_kv_seqlen = max(kv_seqlen)
         out = flash_attn_3.flash_attn_varlen_func(q, k, v, cu_seqlens_q, cu_seqlens_kv, max_q_seqlen, max_kv_seqlen)
+    elif config.ATTN == 'flash_attn_4':
+        if 'flash_attn_4_varlen' not in globals():
+            from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen
+        cu_seqlens_q = torch.cat([torch.tensor([0]), torch.cumsum(torch.tensor(q_seqlen), dim=0)]).int().to(device)
+        if num_all_args == 1:
+            q, k, v = qkv.unbind(dim=1)
+            cu_seqlens_kv = cu_seqlens_q.clone()
+            max_q_seqlen = max_kv_seqlen = max(q_seqlen)
+        elif num_all_args == 2:
+            k, v = kv.unbind(dim=1)
+            cu_seqlens_kv = torch.cat([torch.tensor([0]), torch.cumsum(torch.tensor(kv_seqlen), dim=0)]).int().to(device)
+            max_q_seqlen = max(q_seqlen)
+            max_kv_seqlen = max(kv_seqlen)
+        elif num_all_args == 3:
+            cu_seqlens_kv = torch.cat([torch.tensor([0]), torch.cumsum(torch.tensor(kv_seqlen), dim=0)]).int().to(device)
+            max_q_seqlen = max(q_seqlen)
+            max_kv_seqlen = max(kv_seqlen)
+        out = flash_attn_4_varlen(q, k, v, cu_seqlens_q, cu_seqlens_kv, max_q_seqlen, max_kv_seqlen)
+        if isinstance(out, tuple):
+            out = out[0]
+    elif config.ATTN == 'sdpa':
+        from torch.nn.functional import scaled_dot_product_attention as _sdpa
+        if num_all_args == 1:
+            q, k, v = qkv.unbind(dim=1)   # each [T, H, C]
+        elif num_all_args == 2:
+            k, v = kv.unbind(dim=1)
+        # Process each batch item separately to respect variable sequence lengths
+        q_offset, kv_offset = 0, 0
+        out_parts = []
+        for i in range(len(q_seqlen)):
+            lq, lkv = q_seqlen[i], kv_seqlen[i]
+            qi = q[q_offset:q_offset + lq].permute(1, 0, 2).unsqueeze(0)    # [1, H, Lq, C]
+            ki = k[kv_offset:kv_offset + lkv].permute(1, 0, 2).unsqueeze(0) # [1, H, Lkv, C]
+            vi = v[kv_offset:kv_offset + lkv].permute(1, 0, 2).unsqueeze(0) # [1, H, Lkv, C]
+            oi = _sdpa(qi, ki, vi)                                            # [1, H, Lq, C]
+            out_parts.append(oi.squeeze(0).permute(1, 0, 2))                 # [Lq, H, C]
+            q_offset += lq
+            kv_offset += lkv
+        out = torch.cat(out_parts, dim=0)   # [T_Q, H, C]
     else:
         raise ValueError(f"Unknown attention module: {config.ATTN}")
     
