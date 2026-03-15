@@ -60,11 +60,14 @@ class FlowMatchingTrainer(BasicTrainer):
             }
         },
         sigma_min: float = 1e-5,
+        mask_ratio: float = 0.0,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.t_schedule = t_schedule
         self.sigma_min = sigma_min
+        assert 0.0 <= mask_ratio < 1.0, f"mask_ratio must be in [0, 1), got {mask_ratio}"
+        self.mask_ratio = mask_ratio
 
     def diffuse(self, x_0: torch.Tensor, t: torch.Tensor, noise: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
@@ -163,19 +166,40 @@ class FlowMatchingTrainer(BasicTrainer):
         t = self.sample_t(x_0.shape[0]).to(x_0.device).float()
         x_t = self.diffuse(x_0, t, noise=noise)
         cond = self.get_cond(cond, **kwargs)
-        
-        pred = self.training_models['denoiser'](x_t, t * 1000, cond, **kwargs)
-        assert pred.shape == noise.shape == x_0.shape
+
+        # Generate token mask when mask_ratio > 0.
+        # x_0 is [B, C, R, R, R]; tokens are the R^3 spatial positions.
+        keep_indices = None
+        if self.mask_ratio > 0:
+            num_tokens = x_0[0, 0].numel()  # R^3
+            n_keep = max(1, round(num_tokens * (1 - self.mask_ratio)))
+            keep_indices = torch.randperm(num_tokens, device=x_0.device)[:n_keep].sort()[0]
+
+        pred = self.training_models['denoiser'](x_t, t * 1000, cond, keep_indices=keep_indices, **kwargs)
         target = self.get_v(x_0, noise, t)
-        terms = edict()
-        terms["mse"] = F.mse_loss(pred, target)
-        terms["loss"] = terms["mse"]
+
+        if keep_indices is not None:
+            # pred: [B, n_keep, C_out]; align target to the same token subset
+            B, C = target.shape[0], target.shape[1]
+            target_flat = target.view(B, C, -1).permute(0, 2, 1)[:, keep_indices, :]
+            terms = edict()
+            terms["mse"] = F.mse_loss(pred, target_flat)
+            terms["loss"] = terms["mse"]
+            mse_per_instance = np.array([
+                F.mse_loss(pred[i], target_flat[i]).item()
+                for i in range(B)
+            ])
+        else:
+            assert pred.shape == noise.shape == x_0.shape
+            terms = edict()
+            terms["mse"] = F.mse_loss(pred, target)
+            terms["loss"] = terms["mse"]
+            mse_per_instance = np.array([
+                F.mse_loss(pred[i], target[i]).item()
+                for i in range(x_0.shape[0])
+            ])
 
         # log loss with time bins
-        mse_per_instance = np.array([
-            F.mse_loss(pred[i], target[i]).item()
-            for i in range(x_0.shape[0])
-        ])
         time_bin = np.digitize(t.cpu().numpy(), np.linspace(0, 1, 11)) - 1
         for i in range(10):
             if (time_bin == i).sum() != 0:

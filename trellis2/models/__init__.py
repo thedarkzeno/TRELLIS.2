@@ -5,6 +5,7 @@ __attributes = {
     'SparseStructureEncoder': 'sparse_structure_vae',
     'SparseStructureDecoder': 'sparse_structure_vae',
     'SparseStructureFlowModel': 'sparse_structure_flow',
+    'ElasticSparseStructureFlowModel': 'sparse_structure_flow',
     
     # SLat Generation
     'SLatFlowModel': 'structured_latent_flow',
@@ -71,7 +72,7 @@ def from_pretrained(path: str, **kwargs):
 # For Pylance
 if __name__ == '__main__':
     from .sparse_structure_vae import SparseStructureEncoder, SparseStructureDecoder
-    from .sparse_structure_flow import SparseStructureFlowModel
+    from .sparse_structure_flow import SparseStructureFlowModel, ElasticSparseStructureFlowModel
     from .structured_latent_flow import SLatFlowModel, ElasticSLatFlowModel
         
     from .sc_vaes.sparse_unet_vae import SparseUnetVaeEncoder, SparseUnetVaeDecoder
